@@ -27,31 +27,29 @@ theme <- theme_bw() +
                legend.position = "right", legend.justification = "left")
 ```
 
-
 # Import table
 
 ```{r}
 # Study patients
-patients_list <- read.csv(paste0(path, "clad-bal-multiomics-bm2/analysis/backup/clinical-metadata/patients-selection.csv") )
+patients_list <- read.csv(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/analysis/backup/clinical-metadata/patients-selection.csv") )
 stable_patients <- patients_list %>% filter(Enrolled.in.stable.study == TRUE) %>% pull(Record.ID)
 length(stable_patients) # 56
 biomarker_patients <- patients_list %>% filter(Enrolled.in.biomarker.study == TRUE) %>% pull(Record.ID)
 length(biomarker_patients) # 26
 ```
 
-Patient 11 changed pred/mmf date from 11/01/2018 to 11/01/2019 as the date did not make sense
-Patient 44 changed pulse date from 07/02/2019 to 07/12/2019 to be consistent with following pulse dates
+Patient 11 changed pred/mmf date from 11/01/2018 to 11/01/2019 as the date did not make sense Patient 44 changed pulse date from 07/02/2019 to 07/12/2019 to be consistent with following pulse dates
 
 ```{r}
-sheet_names <- readxl::excel_sheets(paste0(path, "immunosuppression-analysis/immunosuppression-table.xlsx"))
-xlsx <- readxl::read_xlsx(paste0(path, "immunosuppression-analysis/immunosuppression-table.xlsx"))
-#master_metadata <- readRDS(paste0(path, "clad-bal-multiomics-bm2/clinical_metadata_formatting/rsd_files/master_metadata.rds"))
-#clad_assessment <- readRDS(paste0(path, "clad-bal-multiomics-bm2/clinical_metadata_formatting/rsd_files/clad_assessment.rds"))
+sheet_names <- readxl::excel_sheets(paste0(path, "Biomarker\ 2/immunosuppression-analysis/immunosuppression-table.xlsx"))
+xlsx <- readxl::read_xlsx(paste0(path, "Biomarker\ 2/immunosuppression-analysis/immunosuppression-table.xlsx"))
+#master_metadata <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/clinical_metadata_formatting/rsd_files/master_metadata.rds"))
+#clad_assessment <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/clinical_metadata_formatting/rsd_files/clad_assessment.rds"))
 
 # Extract each sheet
 table_list <- list()
 for (i in sheet_names){
-  table_list[[i]] <- readxl::read_xlsx(paste0(path, "immunosuppression-analysis/immunosuppression-table.xlsx"), sheet = i ) %>%
+  table_list[[i]] <- readxl::read_xlsx(paste0(path, "Biomarker\ 2/immunosuppression-analysis/immunosuppression-table.xlsx"), sheet = i ) %>%
     mutate(Record.ID = i,
            Record.ID = as.numeric(gsub("ID", "", Record.ID)) ) %>%
     replace_with_na_all(condition = ~.x %in% "<NA>")
@@ -74,9 +72,10 @@ table %>% filter(!Study %in% "Stable") %>% group_by(Group) %>% count(Record.ID)
 # Stable cohort: 21 CLAD-free from present
 ```
 
-
 ```{r}
 # Split into sub tables accordingly
+immunosuppression_list <- list()
+
 tacro_df <- table %>%
   dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, tacrolimus_date, tacrolimus_level, tacro_check) %>%
   filter(!is.na(tacrolimus_level)) %>%
@@ -84,62 +83,99 @@ tacro_df <- table %>%
          tacrolimus_level = gsub("<", "", tacrolimus_level),
          tacrolimus_level = as.numeric(gsub("(c) ", "", tacrolimus_level, fixed = TRUE)),
          tacrolimus_date = as.Date(tacrolimus_date),
-         Days = as.numeric(tacrolimus_date - transplant_date)) %>%
-  filter(Days <= 900, Study != "Stable")
+         Days = as.numeric(tacrolimus_date - transplant_date),
+         Patient_days = paste(Record.ID, Days, sep = "_")) #%>%
+  #filter(Days <= 900, Study != "Stable")
+immunosuppression_list[["tacro_df"]] <- tacro_df
+length(unique(tacro_df$Record.ID)) # 47
   
 prednisolone_df <- table %>%
   dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, prednisolone_date, prednisolone_dose_mgd) %>%
   filter(!is.na(prednisolone_dose_mgd)) %>%
   mutate(prednisolone_date = as.Date(prednisolone_date),
-         Days = as.numeric(prednisolone_date - transplant_date)) %>%
-  filter(Days <= 900, Study != "Stable")
-  
+         Days = as.numeric(prednisolone_date - transplant_date),
+         Patient_days = paste(Record.ID, Days, sep = "_"),
+         pulse = "No") #%>%
+  #filter(Days <= 900, Study != "Stable")
+immunosuppression_list[["prednisolone_df"]] <- prednisolone_df
+
+pulse_df <- table %>%
+  dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, pulse_date, pulse_dose) %>%
+  filter(!is.na(pulse_dose)) %>%
+  mutate(pulse_date = as.Date(pulse_date),
+         Days = as.numeric(pulse_date - transplant_date),
+         Patient_days = paste(Record.ID, Days, sep = "_"),
+         pulse = "Yes") #%>%
+  #filter(Days <= 900, Study != "Stable")
+immunosuppression_list[["pulse_df"]] <- pulse_df
+
+prednisolone_pulse_df <- prednisolone_df %>% 
+  full_join(pulse_df) %>%
+  unite("prednisolone_pulse_date", c("prednisolone_date", "pulse_date"), na.rm = TRUE, remove = TRUE) %>%
+  unite("prednisolone_pulse_dose_mgd", c("prednisolone_dose_mgd", "pulse_dose"), na.rm = TRUE, remove = TRUE) %>%
+  mutate(prednisolone_pulse_date = as.Date(prednisolone_pulse_date),
+         prednisolone_pulse_dose_mgd = as.numeric(prednisolone_pulse_dose_mgd))
+immunosuppression_list[["prednisolone_pulse_df"]] <- prednisolone_pulse_df
+length(unique(prednisolone_pulse_df$Record.ID)) # 47
+
 mmf_df <- table %>%
   dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, mmf_date, mmf_dose_gd) %>%
   filter(!is.na(mmf_dose_gd)) %>%
   mutate(mmf_date = as.Date(mmf_date),
-         Days = as.numeric(mmf_date - transplant_date))
-  
+         Days = as.numeric(mmf_date - transplant_date),
+         Patient_days = paste(Record.ID, Days, sep = "_"))
+immunosuppression_list[["mmf_df"]] <- mmf_df
+length(unique(mmf_df$Record.ID)) # 30
+
 azathioprine_df <- table %>%
   dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, azathioprine_date, azathioprine_dose_mgd) %>%
   filter(!is.na(azathioprine_dose_mgd)) %>%
   mutate(azathioprine_date = as.Date(azathioprine_date),
-         Days = as.numeric(azathioprine_date - transplant_date))
-  
+         Days = as.numeric(azathioprine_date - transplant_date),
+         Patient_days = paste(Record.ID, Days, sep = "_"))
+immunosuppression_list[["azathioprine_df"]] <- azathioprine_df
+length(unique(azathioprine_df$Record.ID)) # 26
+
 everolimus_df <- table %>%
   dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, everolimus_date, everolimus_level_mcgl) %>%
   filter(!is.na(everolimus_level_mcgl)) %>%
   mutate(everolimus_level_mcgl = as.numeric(gsub("* ", "", everolimus_level_mcgl, fixed = TRUE)),
          everolimus_date = as.Date(everolimus_date),
-         Days = as.numeric(everolimus_date - transplant_date))
+         Days = as.numeric(everolimus_date - transplant_date),
+         Patient_days = paste(Record.ID, Days, sep = "_"))
+immunosuppression_list[["everolimus_df"]] <- everolimus_df
+length(unique(everolimus_df$Record.ID)) # 2
 
 cyclosporin_df <- table %>%
   dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, cyclosporin_date, cyclosporin_level) %>%
   filter(!is.na(cyclosporin_level)) %>%
   mutate(cyclosporin_level = as.numeric(gsub("* ", "", cyclosporin_level, fixed = TRUE)),
          cyclosporin_date = as.Date(cyclosporin_date),
-         Days = as.numeric(cyclosporin_date - transplant_date))
+         Days = as.numeric(cyclosporin_date - transplant_date),
+         Patient_days = paste(Record.ID, Days, sep = "_"))
+immunosuppression_list[["cyclosporin_df"]] <- cyclosporin_df
+length(unique(cyclosporin_df$Record.ID)) # 1
   
 weight_df <- table %>%
   dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, weight_date, weight)  %>%
   filter(!is.na(weight)) %>%
   mutate(weight_date = as.Date(weight_date),
-         Days = as.numeric(weight_date - transplant_date))
-  
-pulse_df <- table %>%
-  dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, pulse_date, pulse_dose) %>%
-  filter(!is.na(pulse_dose)) %>%
-  mutate(pulse_date = as.Date(pulse_date),
-         Days = as.numeric(pulse_date - transplant_date)) %>%
-  filter(Days <= 900, Study != "Stable")
+         Days = as.numeric(weight_date - transplant_date),
+         Patient_days = paste(Record.ID, Days, sep = "_"))
+immunosuppression_list[["weight_df"]] <- weight_df
+length(unique(weight_df$Record.ID)) # 46
 
-d <- pulse_df
+saveRDS(immunosuppression_list, paste0(path, "Biomarker\ 2/immunosuppression-analysis/immunosuppression-list.rds") )
 ```
 
 ```{r}
 # Tacrolimus levels over time post-transplant
-ggplot(tacro_df, aes(x = Days, y = tacrolimus_level)) +
+tacro_df %>%
+  filter(Days <= 900, Study != "Stable") %>%
+  
+ggplot(aes(x = Days, y = tacrolimus_level)) +
   geom_smooth(aes(group = Group, colour = Group)) +
+  geom_point(aes(colour = Group)) +
   labs(title = "Tacrolimus", y = "Trough value") +
   theme +
   scale_y_log10() +
@@ -159,8 +195,3 @@ ggplot() +
 
 
 ```
-
-
-
-
-
