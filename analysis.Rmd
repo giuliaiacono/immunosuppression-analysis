@@ -4,17 +4,19 @@ output: html_document
 date: "2025-03-03"
 ---
 
-# Install packages
-
-```{r}
-install.packages("tidyverse", "naniar")
-```
-
 # Load libraries
 
 ```{r}
 library(tidyverse)
 library(naniar)
+library(ggpubr)
+library(lmerTest)
+library(SummarizedExperiment)
+library(circlize)
+library(ComplexHeatmap)
+library(ggalluvial)
+library(splines)
+library(sjmisc)
 ```
 
 # Themes
@@ -31,25 +33,25 @@ theme <- theme_bw() +
 
 ```{r}
 # Study patients
-patients_list <- read.csv(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/analysis/backup/clinical-metadata/patients-selection.csv") )
+patients_list <- read.csv(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/analysis/clinical-metadata/patients-selection.csv") )
 stable_patients <- patients_list %>% filter(Enrolled.in.stable.study == TRUE) %>% pull(Record.ID)
 length(stable_patients) # 56
-biomarker_patients <- patients_list %>% filter(Enrolled.in.biomarker.study == TRUE) %>% pull(Record.ID)
+biomarker_patients <- patients_list %>% filter(Enrolled.in.biomarker.study == TRUE) %>% arrange(CLAD) %>% pull(Record.ID)
 length(biomarker_patients) # 26
 ```
 
 Patient 11 changed pred/mmf date from 11/01/2018 to 11/01/2019 as the date did not make sense Patient 44 changed pulse date from 07/02/2019 to 07/12/2019 to be consistent with following pulse dates
 
 ```{r}
-sheet_names <- readxl::excel_sheets(paste0(path, "Biomarker\ 2/immunosuppression-analysis/immunosuppression-table.xlsx"))
-xlsx <- readxl::read_xlsx(paste0(path, "Biomarker\ 2/immunosuppression-analysis/immunosuppression-table.xlsx"))
+sheet_names <- readxl::excel_sheets(paste0(path, "Biomarker\ 2/immunosuppression-analysis/data/immunosuppression-table.xlsx"))
+xlsx <- readxl::read_xlsx(paste0(path, "Biomarker\ 2/immunosuppression-analysis/data/immunosuppression-table.xlsx"))
 #master_metadata <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/clinical_metadata_formatting/rsd_files/master_metadata.rds"))
 #clad_assessment <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/clinical_metadata_formatting/rsd_files/clad_assessment.rds"))
 
 # Extract each sheet
 table_list <- list()
 for (i in sheet_names){
-  table_list[[i]] <- readxl::read_xlsx(paste0(path, "Biomarker\ 2/immunosuppression-analysis/immunosuppression-table.xlsx"), sheet = i ) %>%
+  table_list[[i]] <- readxl::read_xlsx(paste0(path, "Biomarker\ 2/immunosuppression-analysis/data/immunosuppression-table.xlsx"), sheet = i ) %>%
     mutate(Record.ID = i,
            Record.ID = as.numeric(gsub("ID", "", Record.ID)) ) %>%
     replace_with_na_all(condition = ~.x %in% "<NA>")
@@ -84,8 +86,9 @@ tacro_df <- table %>%
          tacrolimus_level = as.numeric(gsub("(c) ", "", tacrolimus_level, fixed = TRUE)),
          tacrolimus_date = as.Date(tacrolimus_date),
          Days = as.numeric(tacrolimus_date - transplant_date),
-         Patient_days = paste(Record.ID, Days, sep = "_")) #%>%
-  #filter(Days <= 900, Study != "Stable")
+         Patient_days = paste(Record.ID, Days, sep = "_")) %>%
+  group_by(Patient_days) %>%
+  slice_min(tacrolimus_level, n = 1) # if more than one recording in one day, take the lower value
 immunosuppression_list[["tacro_df"]] <- tacro_df
 length(unique(tacro_df$Record.ID)) # 47
   
@@ -95,8 +98,9 @@ prednisolone_df <- table %>%
   mutate(prednisolone_date = as.Date(prednisolone_date),
          Days = as.numeric(prednisolone_date - transplant_date),
          Patient_days = paste(Record.ID, Days, sep = "_"),
-         pulse = "No") #%>%
-  #filter(Days <= 900, Study != "Stable")
+         pulse = "No") %>%
+  group_by(Patient_days) %>%
+  slice_min(prednisolone_dose_mgd, n = 1)
 immunosuppression_list[["prednisolone_df"]] <- prednisolone_df
 
 pulse_df <- table %>%
@@ -105,8 +109,9 @@ pulse_df <- table %>%
   mutate(pulse_date = as.Date(pulse_date),
          Days = as.numeric(pulse_date - transplant_date),
          Patient_days = paste(Record.ID, Days, sep = "_"),
-         pulse = "Yes") #%>%
-  #filter(Days <= 900, Study != "Stable")
+         pulse = "Yes") %>%
+  group_by(Patient_days) %>%
+  slice_min(pulse_dose, n = 1)
 immunosuppression_list[["pulse_df"]] <- pulse_df
 
 prednisolone_pulse_df <- prednisolone_df %>% 
@@ -123,7 +128,9 @@ mmf_df <- table %>%
   filter(!is.na(mmf_dose_gd)) %>%
   mutate(mmf_date = as.Date(mmf_date),
          Days = as.numeric(mmf_date - transplant_date),
-         Patient_days = paste(Record.ID, Days, sep = "_"))
+         Patient_days = paste(Record.ID, Days, sep = "_")) %>%
+  group_by(Patient_days) %>%
+  slice_min(mmf_dose_gd, n = 1)
 immunosuppression_list[["mmf_df"]] <- mmf_df
 length(unique(mmf_df$Record.ID)) # 30
 
@@ -132,7 +139,9 @@ azathioprine_df <- table %>%
   filter(!is.na(azathioprine_dose_mgd)) %>%
   mutate(azathioprine_date = as.Date(azathioprine_date),
          Days = as.numeric(azathioprine_date - transplant_date),
-         Patient_days = paste(Record.ID, Days, sep = "_"))
+         Patient_days = paste(Record.ID, Days, sep = "_")) %>%
+  group_by(Patient_days) %>%
+  slice_min(azathioprine_dose_mgd, n = 1)
 immunosuppression_list[["azathioprine_df"]] <- azathioprine_df
 length(unique(azathioprine_df$Record.ID)) # 26
 
@@ -142,7 +151,9 @@ everolimus_df <- table %>%
   mutate(everolimus_level_mcgl = as.numeric(gsub("* ", "", everolimus_level_mcgl, fixed = TRUE)),
          everolimus_date = as.Date(everolimus_date),
          Days = as.numeric(everolimus_date - transplant_date),
-         Patient_days = paste(Record.ID, Days, sep = "_"))
+         Patient_days = paste(Record.ID, Days, sep = "_")) %>%
+  group_by(Patient_days) %>%
+  slice_min(everolimus_level_mcgl, n = 1)
 immunosuppression_list[["everolimus_df"]] <- everolimus_df
 length(unique(everolimus_df$Record.ID)) # 2
 
@@ -152,46 +163,757 @@ cyclosporin_df <- table %>%
   mutate(cyclosporin_level = as.numeric(gsub("* ", "", cyclosporin_level, fixed = TRUE)),
          cyclosporin_date = as.Date(cyclosporin_date),
          Days = as.numeric(cyclosporin_date - transplant_date),
-         Patient_days = paste(Record.ID, Days, sep = "_"))
+         Patient_days = paste(Record.ID, Days, sep = "_")) %>%
+  group_by(Patient_days) %>%
+  slice_min(cyclosporin_level, n = 1)
 immunosuppression_list[["cyclosporin_df"]] <- cyclosporin_df
 length(unique(cyclosporin_df$Record.ID)) # 1
   
 weight_df <- table %>%
   dplyr::select(Record.ID, transplant_date, Group, clad_day_clinical, Study, weight_date, weight)  %>%
-  filter(!is.na(weight)) %>%
+  filter(!is.na(weight), weight > 1) %>%
   mutate(weight_date = as.Date(weight_date),
          Days = as.numeric(weight_date - transplant_date),
-         Patient_days = paste(Record.ID, Days, sep = "_"))
+         Patient_days = paste(Record.ID, Days, sep = "_")) %>%
+  group_by(Patient_days) %>%
+  slice_min(weight, n = 1)
 immunosuppression_list[["weight_df"]] <- weight_df
 length(unique(weight_df$Record.ID)) # 46
 
-saveRDS(immunosuppression_list, paste0(path, "Biomarker\ 2/immunosuppression-analysis/immunosuppression-list.rds") )
+saveRDS(immunosuppression_list, paste0(path, "Biomarker\ 2/immunosuppression-analysis/data/immunosuppression-list.rds") )
+```
+
+# All medications overview
+
+Only patient 21 took cyclosporin.
+
+```{r}
+all_immunosuppression_biomarker <- mmf_df %>%
+  mutate(Immunosuppression = "Mycophenolate") %>% 
+  full_join(azathioprine_df %>% mutate(Immunosuppression = "Azathioprine")) %>%
+  full_join(tacro_df %>% mutate(Immunosuppression = "Tacrolimus")) %>%
+  full_join(prednisolone_pulse_df %>% mutate(Immunosuppression = "Prednisolone")) %>%
+  filter(Days <= 1000, Study != "Stable") %>%
+  mutate(Record.ID = factor(Record.ID, levels = biomarker_patients),
+         Month = round(Days/30.415),
+         Immunosuppression_interval = case_when(Days <= 92 ~ "<3 months",
+                                         Days > 92 & Days <= 183 ~ "3-6 months",
+                                         Days > 183 & Days <= 365 ~ "7-12 months",
+                                         Days > 365 ~ ">12 months"), 
+         Immunosuppression_interval = factor(Immunosuppression_interval, c("<3 months", "3-6 months", "7-12 months", ">12 months")),
+         Months_grouped = case_when(Days <= 42 ~ "<1.5",
+                                    Days > 42 & Days <= 92 ~ "1.5-3",
+                                    Days > 92 & Days <= 183 ~ "4-6",
+                                    Days > 183 & Days <= 273 ~ "7-9",
+                                    Days > 273 & Days <= 365 ~ "10-12",
+                                    Days > 365 & Days <= 547 ~ "13-18",
+                                    Days > 547 ~ ">18"), 
+         Months_grouped = factor(Months_grouped, c("<1.5", "1.5-3", "4-6", "7-9", "10-12", "13-18", ">18")) )
 ```
 
 ```{r}
-# Tacrolimus levels over time post-transplant
-tacro_df %>%
-  filter(Days <= 900, Study != "Stable") %>%
+p <- 
   
-ggplot(aes(x = Days, y = tacrolimus_level)) +
-  geom_smooth(aes(group = Group, colour = Group)) +
-  geom_point(aes(colour = Group)) +
-  labs(title = "Tacrolimus", y = "Trough value") +
-  theme +
-  scale_y_log10() +
-  facet_wrap(~Record.ID) +
-  scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey"))
+  ggplot() +
+    geom_path(data = all_immunosuppression_biomarker, aes(x = Days, y = Record.ID, group = Record.ID), colour = "grey", size = 1) +
+    geom_point(data = all_immunosuppression_biomarker, aes(x = Days, y = Record.ID, fill = Group), shape = 21, stroke = 0.2) +
+    geom_point(data = clad_assessment %>% filter(Record.ID %in% biomarker_patients), aes(x = clad_day_clinical, y = factor(Record.ID, levels = biomarker_patients)), shape = 4, colour = "red", size = 2) +
+    facet_grid(Group~Immunosuppression, scales = "free", space = "free") +
+    theme +
+    theme(legend.position = "none") +
+    labs(title = "Immunosuppression instances recorded", y = "Patient") +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) 
 
-# Prednisolone
-ggplot() +
-  geom_smooth(data = prednisolone_df, aes(x = Days, y = prednisolone_dose_mgd, group = Group, colour = Group)) +
-  geom_point(data = pulse_df, aes(x = Days, y = pulse_dose), colour = "red") +
-  geom_point(data = clad_assessment %>% filter(Record.ID %in% unique(prednisolone_df$Record.ID)), aes(x = clad_day_clinical, y = 1), shape = 4) +
-  labs(title = "Prednisolone", y = "Dose (mg/d)") +
-  theme +
-  scale_y_log10() +
-  facet_wrap(~Record.ID) +
-  scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey"))
-
-
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all-imm-instances.jpeg"), p, width = 18, height = 12, units = 'cm', dpi = 600) 
 ```
+
+# ----------------------------
+# Tacrolimus
+
+```{r}
+tacro_biomarker <- all_immunosuppression_biomarker %>% filter(Immunosuppression == "Tacrolimus") 
+```
+
+## Levels post-transplant
+
+```{r}
+summary(lmer(tacrolimus_level ~ Days*Group + (1|Record.ID), data = tacro_biomarker) ) # no differences between groups and no interaction effect
+```
+
+### Range comparison over months average of all patients together
+
+```{r}
+tacro_biomarker_average <- tacro_biomarker %>%
+  group_by(Group, Month) %>%
+  summarise(tacro_average_levels = mean(tacrolimus_level),
+            high = mean(tacrolimus_level) + sd(tacrolimus_level, na.rm = TRUE),
+            low  = mean(tacrolimus_level) - sd(tacrolimus_level, na.rm = TRUE)) %>%
+  na.omit()
+
+p <- 
+  
+  ggplot() +
+    geom_ribbon(data = tacro_biomarker_average, aes(x = Month, ymin = low, ymax = high, fill = Group), alpha = 0.3, colour = "black", size = 0.2) +
+    geom_path(data = tacro_biomarker_average, aes(x = Month, y = tacro_average_levels, colour = Group)) +
+    geom_point(data = tacro_biomarker_average, aes(x = Month, y = tacro_average_levels, fill = Group), shape = 21) +
+    labs(title = "Tacrolimus trough level post-transplant", y = "Trough level (average per group per month)", 
+         caption = "Shading shows the standard deviation\nabove and below the average group trough level") +
+    theme +
+    theme(legend.position = "bottom") +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_x_continuous(limits = c(0, 26)) 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/tacrolimus-range-comparison-months.jpeg"), p, width = 9, height = 10, units = 'cm', dpi = 600)
+```
+
+### Patients separate
+
+```{r}
+tacro_biomarker_average <- tacro_biomarker %>%
+  group_by(Group, Record.ID, Month) %>%
+  arrange(Days) %>%
+  summarise(tacro_average_levels = mean(tacrolimus_level),
+            high = mean(tacrolimus_level) + sd(tacrolimus_level, na.rm = TRUE),
+            low  = mean(tacrolimus_level) - sd(tacrolimus_level, na.rm = TRUE)) 
+
+p <- 
+  
+  ggplot() +
+    #geom_ribbon(data = tacro_biomarker_average, aes(x = Month, ymin = low, ymax = high, fill = Group), alpha = 0.3, colour = "black", size = 0.2) +
+    geom_path(data = tacro_biomarker_average, aes(x = Month, y = tacro_average_levels, colour = Group, group = Record.ID), size = 0.1) +
+    #geom_smooth(data = tacro_biomarker_average, aes(x = Month, y = tacro_average_levels, colour = Group, group = Record.ID), se = FALSE) +
+    geom_point(data = tacro_biomarker_average, aes(x = Month, y = tacro_average_levels, fill = Group), shape = 21) +
+    labs(title = "Tacrolimus trough level post-transplant", y = "Trough level (average per patient per month)", 
+         caption = "Data points from the same patient are connected") +
+    theme +
+    theme(legend.position = "bottom") +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_x_continuous(limits = c(0, 26))
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/tacrolimus-range-comparison-months-patient.jpeg"), p, width = 9, height = 10, units = 'cm', dpi = 600) 
+```
+
+### Immunosuppression interval
+
+```{r}
+tacro_biomarker_average_interval <- tacro_biomarker %>%
+  group_by(Group, Months_grouped) %>%
+  summarise(tacro_average_levels = mean(tacrolimus_level),
+            high = mean(tacrolimus_level) + sd(tacrolimus_level, na.rm = TRUE),
+            low  = mean(tacrolimus_level) - sd(tacrolimus_level, na.rm = TRUE)) %>%
+  na.omit() 
+
+expected_tacro <- data.frame("Months_grouped" = levels(tacro_biomarker_average_interval$Months_grouped)) %>%
+  mutate("min" = case_when(Months_grouped %in% c("<1.5", "1.5-3", "4-6") ~ 10,
+                           Months_grouped %in% c("7-9", "10-12") ~ 8,
+                           Months_grouped %in% c("13-18", ">18") ~ 5),
+         "max" = case_when(Months_grouped %in% c("<1.5", "1.5-3", "4-6") ~ 12,
+                           Months_grouped %in% c("7-9", "10-12") ~ 10,
+                           Months_grouped %in% c("13-18", ">18") ~ 8),
+         Months_grouped = factor(Months_grouped, c("<1.5", "1.5-3", "4-6", "7-9", "10-12", "13-18", ">18")))
+
+p <- 
+  
+  ggplot() +
+    geom_rect(data = expected_tacro, aes(xmin = as.numeric(Months_grouped)-0.1, xmax = as.numeric(Months_grouped)+0.1, ymin = min, ymax = max ), alpha = 0.6) +
+    geom_path(data = tacro_biomarker_average_interval, aes(x = as.numeric(Months_grouped), y = tacro_average_levels, colour = Group)) +
+    geom_point(data = tacro_biomarker_average_interval, aes(x = as.numeric(Months_grouped), y = tacro_average_levels, fill = Group), shape = 21) +
+    labs(title = "Tacrolimus trough level post-transplant", y = "Trough level (average per group\nper time point)", 
+         x = "Time post-transplant (months)", caption = "Grey area shows expected range") +
+    theme +
+    theme(legend.position = "bottom") +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_x_continuous(breaks = 1:7, labels = levels(tacro_biomarker_average_interval$Months_grouped))
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/tacrolimus-through-months-grouped.jpeg"), p, width = 9, height = 10, units = 'cm', dpi = 600)
+```
+
+### Immunosuppression interval per patient
+
+```{r}
+tacro_biomarker_average_interval <- tacro_biomarker %>%
+  group_by(Group, Record.ID, Months_grouped) %>%
+  summarise(tacro_average_levels = mean(tacrolimus_level),
+            high = mean(tacrolimus_level) + sd(tacrolimus_level, na.rm = TRUE),
+            low  = mean(tacrolimus_level) - sd(tacrolimus_level, na.rm = TRUE)) %>%
+  na.omit() #%>%
+  #pivot_wider(names_from = Group, values_from = tacro_average_levels)
+
+p <- 
+  
+  ggplot() +
+    geom_path(data = tacro_biomarker_average_interval, aes(x = as.numeric(Months_grouped), y = tacro_average_levels, colour = Group, group = Record.ID)) +
+    geom_point(data = tacro_biomarker_average_interval, aes(x = as.numeric(Months_grouped), y = tacro_average_levels, fill = Group, group = Record.ID), shape = 21) +
+    geom_rect(data = expected_tacro, aes(xmin = as.numeric(Months_grouped)-0.1, xmax = as.numeric(Months_grouped)+0.1, ymin = min, ymax = max ), alpha = 0.6) +
+    labs(title = "Tacrolimus trough level post-transplant", y = "Trough level (average per patient\nper time point)", 
+         x = "Time post-transplant (months)", caption = "Grey area shows expected range") +
+    theme +
+    theme(legend.position = "bottom") +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_x_continuous(breaks = 1:7, labels = levels(tacro_biomarker_average_interval$Months_grouped))
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/tacrolimus-through-months-grouped-patients.jpeg"), p, width = 9, height = 10, units = 'cm', dpi = 600) 
+```
+
+```{r}
+tacro_biomarker_average_interval <- tacro_biomarker %>%
+  group_by(Group, Months_grouped) %>%
+  summarise(tacro_average_levels = mean(tacrolimus_level),
+            high = mean(tacrolimus_level) + sd(tacrolimus_level, na.rm = TRUE),
+            low  = mean(tacrolimus_level) - sd(tacrolimus_level, na.rm = TRUE)) %>%
+  na.omit() 
+
+d <- tacro_biomarker %>%
+  filter(Months_grouped %in% c("<1.5", "10-12", "13-18") ) %>% # still higher at <1.5 months even if outliers > 30 removed
+  arrange(Group, Record.ID, Days) 
+
+p <- 
+  ggplot(d) +
+  geom_path(aes(x = Days, y = tacrolimus_level, group = Record.ID, colour = Group)) +
+  geom_point(aes(x = Days, y = tacrolimus_level, fill = Group), shape = 21, alpha = 0.4) +
+  geom_hline(data = tacro_biomarker_average_interval %>% filter(Months_grouped %in% c("<1.5", "10-12", "13-18")), aes(yintercept = tacro_average_levels), lty = "dashed") +
+  theme +
+  labs(title = "Tacrolimus levels (comparison along time intervals)", y = "Trough level", 
+       caption = "Dotted line indicates average trough level for time interval in months.\n
+       It still remains higher at <1.5 months even if outliers > 30 removed") +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+  scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+  facet_grid(~Months_grouped+Group, scales = "free", space = "free") 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/tacrolimus-through-months-grouped-patients-detail.jpeg"), p, width = 25, height = 10, units = 'cm', dpi = 600) 
+```
+
+# ----------------------------
+# Prednisolone
+
+```{r}
+expected_pred <- data.frame("Months_grouped" = c("<1.5", "1.5-3", "4-6", "7-9", "10-12", "13-18", ">18")) %>%
+  mutate("mg_per_kg" = case_when(Months_grouped %in% c("<1.5", "1.5-3") ~ 0.25,
+                           Months_grouped %in% c("4-6") ~ 0.2,
+                           Months_grouped %in% c("7-9", "10-12") ~ 0.15,
+                           Months_grouped %in% c("13-18", ">18") ~ 7.5),
+         Months_grouped = factor(Months_grouped, c("<1.5", "1.5-3", "4-6", "7-9", "10-12", "13-18", ">18"))) 
+
+pred_biomarker <- prednisolone_pulse_df %>%
+  filter(Days <= 1000, Study != "Stable") %>%
+  left_join(weight_df[, c("Record.ID", "weight", "Days")]) %>%
+  mutate(Record.ID = factor(Record.ID),
+         Month = round(Days/30.415),
+         Immunosuppression_interval = case_when(Days <= 92 ~ "<3 months",
+                                         Days > 92 & Days <= 183 ~ "3-6 months",
+                                         Days > 183 & Days <= 365 ~ "7-12 months",
+                                         Days > 365 ~ ">12 months"), 
+         Immunosuppression_interval = factor(Immunosuppression_interval, c("<3 months", "3-6 months", "7-12 months", ">12 months")),
+         Months_grouped = case_when(Days <= 42 ~ "<1.5",
+                                    Days > 42 & Days <= 92 ~ "1.5-3",
+                                    Days > 92 & Days <= 183 ~ "4-6",
+                                    Days > 183 & Days <= 273 ~ "7-9",
+                                    Days > 273 & Days <= 365 ~ "10-12",
+                                    Days > 365 & Days <= 547 ~ "13-18",
+                                    Days > 547 ~ ">18"), 
+         Months_grouped = factor(Months_grouped, c("<1.5", "1.5-3", "4-6", "7-9", "10-12", "13-18", ">18")) ) %>% 
+  left_join(expected_pred) %>%
+  mutate("expected_dose_mg" = case_when(Months_grouped %in% c("<1.5", "1.5-3", "4-6", "7-9", "10-12") ~ mg_per_kg * weight,
+                                        Months_grouped %in% c("13-18", ">18") ~ mg_per_kg))
+  
+
+table(is.na(pred_biomarker$weight))
+#pred_biomarker %>% 
+#  filter(is.na(weight)) %>%  
+#  left_join(spirometry[, c("Record.ID", "Weight", "Days")] ) 
+```
+
+## Levels post-transplant
+
+```{r}
+summary(lmer(tacrolimus_level ~ Days*Group + (1|Record.ID), data = tacro_biomarker) ) # no differences between groups and no interaction effect
+```
+
+### Range comparison over months average of all patients together
+
+```{r}
+pred_biomarker_average <- pred_biomarker %>%
+  filter(pulse == "No") %>% 
+  group_by(Group, Month, pulse) %>%
+  summarise(pred_average_levels = mean(prednisolone_pulse_dose_mgd), # reported levels
+            high = mean(prednisolone_pulse_dose_mgd) + sd(prednisolone_pulse_dose_mgd, na.rm = TRUE),
+            low  = mean(prednisolone_pulse_dose_mgd) - sd(prednisolone_pulse_dose_mgd, na.rm = TRUE)) 
+
+p <- 
+  
+  ggplot() +
+    geom_ribbon(data = pred_biomarker_average, aes(x = Month, ymin = low, ymax = high, fill = Group), alpha = 0.3, colour = "black", size = 0.2) +
+    geom_path(data = pred_biomarker_average, aes(x = Month, y = pred_average_levels, colour = Group)) +
+    geom_point(data = pred_biomarker_average, aes(x = Month, y = pred_average_levels, fill = Group), shape = 21) +
+    labs(title = "Prednisolone post-transplant\n(excluding pulses)", y = "mg (daily average per group)",
+         caption = "Shading shows the standard deviation\nabove and below the average group trough level") +
+    theme +
+    theme(legend.position = "bottom") +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_x_continuous(limits = c(0, 26)) +
+    geom_vline(xintercept = 12, lty = "dashed", colour = "grey")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/pred-range-comparison-months.jpeg"), p, width = 9, height = 10, units = 'cm', dpi = 600) 
+
+
+# patients separate
+pred_biomarker_average <- pred_biomarker %>%
+  filter(pulse == "No") %>% 
+  group_by(Group, Record.ID, Month) %>%
+  summarise(pred_average_levels = mean(prednisolone_pulse_dose_mgd), # reported levels
+            high = mean(prednisolone_pulse_dose_mgd) + sd(prednisolone_pulse_dose_mgd, na.rm = TRUE),
+            low  = mean(prednisolone_pulse_dose_mgd) - sd(prednisolone_pulse_dose_mgd, na.rm = TRUE)) 
+
+p <- 
+  
+  ggplot() +
+    #geom_ribbon(data = tacro_biomarker_average, aes(x = Month, ymin = low, ymax = high, fill = Group), alpha = 0.3, colour = "black", size = 0.2) +
+    #geom_path(data = pred_biomarker_average, aes(x = Month, y = pred_average_levels, colour = Group, group = Record.ID), size = 0.1) +
+    geom_smooth(data = tacro_biomarker_average, aes(x = Month, y = tacro_average_levels, colour = Group, group = Record.ID), se = FALSE) +
+    #geom_jitter(data = pred_biomarker_average, aes(x = Month, y = pred_average_levels, fill = Group), shape = 21, width = 0.6, alpha = 0.6) +
+    labs(title = "Prednisolone post-transplant\n(excluding pulses)", y = "mg daily (average per patient per month)",
+         caption = "Data points from the same patient are connected") +
+    theme +
+    theme(legend.position = "bottom") +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_x_continuous(limits = c(0, 26)) +
+    geom_vline(xintercept = 12, lty = "dashed", colour = "grey")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/pred-range-comparison-months-patient.jpeg"), p, width = 9, height = 10, units = 'cm', dpi = 600) 
+```
+### Accounding for weight and checking each individual patient
+
+```{r, fig.height=5, fig.width=20}
+pred_biomarker_average_patient <- pred_biomarker %>%
+  filter(pulse == "No", !is.na(weight)) %>% 
+  group_by(Group, Record.ID, Months_grouped) %>%
+  summarise("Reported" = mean(prednisolone_pulse_dose_mgd), 
+            "Expected" = mean(expected_dose_mg))  %>%
+  pivot_longer(Reported:Expected, names_to = "Dose", values_to = "Level") %>%
+  arrange(Group, Record.ID, Months_grouped) %>%
+  mutate(Record.ID = factor(as.character(Record.ID)))
+
+p <- 
+  
+  ggplot(pred_biomarker_average_patient, aes(x = as.numeric(Months_grouped), y = Level)) +
+    geom_point(aes(fill = Dose), shape = 21) +
+    geom_path(aes(colour = Dose, group = Dose)) +
+    labs(title = "Prednisolone post-transplant (excluding pulses)", y = "mg (average)", x = "Time post-transplant (months)") +
+    theme +
+    scale_colour_manual(values = c("Reported" = "blue", "Expected" = "darkgrey")) +
+    scale_fill_manual(values = c("Reported" = "blue", "Expected" = "darkgrey")) +
+    facet_wrap(Group~Record.ID, nrow = 2) +
+    scale_x_continuous(breaks = 1:7, labels = levels(pred_biomarker_average_patient$Months_grouped)) 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/pred-range-comparison-months-weight-patient.jpeg"), p, width = 40, height = 10, units = 'cm', dpi = 600)
+```
+
+```{r}
+d <- pred_biomarker %>%
+  filter(pulse == "No", !is.na(weight)) %>% 
+  group_by(Group, Record.ID, Months_grouped) %>%
+  summarise("Reported" = mean(prednisolone_pulse_dose_mgd), 
+            "Expected" = mean(expected_dose_mg)) %>%
+  mutate(Difference = Reported - Expected,
+         Difference = ifelse(Difference > 0, "Higher than expected", "Lower than expected")) 
+
+ggplot(d, aes(x = Months_grouped, y = Record.ID)) +
+  geom_tile(aes(fill = Difference)) +
+  theme +
+  labs(title = "Prednisolone post-transplant (excluding pulses)", y = "Patient", x = "Time post-transplant (months)") +
+  facet_grid(Group~., scales = "free", space = "free") +
+  scale_fill_manual(values = c("Higher than expected" = "pink", "Lower than expected" = "lightgreen")) 
+```
+
+### Immunosuppression interval
+
+```{r}
+pred_biomarker_average_interval <- pred_biomarker %>%
+  filter(pulse == "No") %>%
+  group_by(Group, Months_grouped) %>%
+  summarise(pred_average_levels = mean(prednisolone_pulse_dose_mgd),
+            high = mean(prednisolone_pulse_dose_mgd) + sd(prednisolone_pulse_dose_mgd, na.rm = TRUE),
+            low  = mean(prednisolone_pulse_dose_mgd) - sd(prednisolone_pulse_dose_mgd, na.rm = TRUE)) %>%
+  na.omit() 
+
+p <- 
+  
+  ggplot() +
+    #geom_rect(data = expected_pred, aes(xmin = as.numeric(Months_grouped)-0.1, xmax = as.numeric(Months_grouped)+0.1, ymin = min, ymax = max ), alpha = 0.6) +
+    geom_path(data = pred_biomarker_average_interval, aes(x = as.numeric(Months_grouped), y = pred_average_levels, colour = Group)) +
+    geom_point(data = pred_biomarker_average_interval, aes(x = as.numeric(Months_grouped), y = pred_average_levels, fill = Group), shape = 21) +
+    labs(title = "Prednisolone post-transplant", y = "mg daily (average per group\nper time point)", 
+         x = "Time post-transplant (months)") +
+    theme +
+    theme(legend.position = "bottom") +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_x_continuous(breaks = 1:7, labels = levels(pred_biomarker_average_interval$Months_grouped))
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/pred-through-months-grouped.jpeg"), p, width = 9, height = 10, units = 'cm', dpi = 600) 
+
+
+# immunosuppression interval per patient
+pred_biomarker_average_interval <- pred_biomarker %>%
+  filter(pulse == "No") %>%
+  group_by(Group, Record.ID, Months_grouped) %>%
+  summarise(pred_average_levels = mean(prednisolone_pulse_dose_mgd),
+            high = mean(prednisolone_pulse_dose_mgd) + sd(prednisolone_pulse_dose_mgd, na.rm = TRUE),
+            low  = mean(prednisolone_pulse_dose_mgd) - sd(prednisolone_pulse_dose_mgd, na.rm = TRUE)) %>%
+  na.omit() 
+p <- 
+  
+  ggplot() +
+    geom_path(data = pred_biomarker_average_interval, aes(x = as.numeric(Months_grouped), y = pred_average_levels, colour = Group, group = Record.ID)) +
+    geom_point(data = pred_biomarker_average_interval, aes(x = as.numeric(Months_grouped), y = pred_average_levels, fill = Group, group = Record.ID), shape = 21) +
+    #geom_rect(data = expected_pred, aes(xmin = as.numeric(Months_grouped)-0.1, xmax = as.numeric(Months_grouped)+0.1, ymin = min, ymax = max ), alpha = 0.6) +
+    labs(title = "Prednisolone post-transplant", y = "mg daily (average per patient\nper time point)", 
+         x = "Time post-transplant (months)") +
+    theme +
+    theme(legend.position = "bottom") +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_x_continuous(breaks = 1:7, labels = levels(pred_biomarker_average_interval$Months_grouped))
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/pred-months-grouped-patients.jpeg"), p, width = 9, height = 10, units = 'cm', dpi = 600) 
+```
+
+```{r}
+summary(lmer(prednisolone_dose_mgd ~ Days*Group + (1|Record.ID), data = prednisolone_df) )
+
+summary(lmer(prednisolone_pulse_dose_mgd ~ Days*Group + (1|Record.ID), data = prednisolone_pulse_df) )
+```
+
+## Pulse
+
+```{r}
+pulse_patients <- pred_biomarker %>% 
+  filter(pulse == "Yes") %>% 
+  pull(Record.ID)
+
+pulse_biomarker <- pred_biomarker %>% 
+  filter(Record.ID %in% c(pulse_patients) )
+
+spirometry <- readRDS(paste0(path, "Biomarker 2/clad-bal-multiomics-bm2/clinical-metadata-formatting/rsd_files/spirometry_metadata.rds") ) %>%
+  filter(Days < 1000) %>%
+  mutate(Record.ID = factor(Record.ID)) %>%
+  filter(Record.ID %in% pulse_patients) 
+
+p <- 
+  ggplot() +
+    geom_point(data = spirometry, aes(x = Days, y = FEV1_pre_percentage, fill = Group), shape = 21) +
+    geom_path(data = spirometry, aes(x = Days, y = FEV1_pre_percentage, color = Group)) +
+    geom_point(data = pulse_biomarker %>% filter(pulse == "Yes"), aes(x = Days, y = 120), shape = 4, color = "red") +
+    theme +
+    theme(legend.position = "bottom") +
+    labs(title = "Patients that received a Prednisolone pulse", y = "FEV1 predicted %") +
+    facet_wrap(~Record.ID) +
+    scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/pred-fev-pulse-patients.jpeg"), p, width = 12, height = 12, units = 'cm', dpi = 600) 
+```
+
+# ----------------------------
+
+# Correlation with DE genes and DA molecules
+
+```{r}
+# DE and DA features
+deseq_list <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/analysis/transcriptomics-small-molecules/deseq/deseq_list.rds"))
+molecules_list <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/analysis/transcriptomics-small-molecules/limma/molecules_list.rds"))
+
+# Genes
+rna_corrected <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/preprocessing/Transcriptomics/Data/deseq/rna_corrected.rds") )
+biomarker_rna_metadata <- rna_corrected$samples %>% 
+  filter(Record.ID %in% biomarker_patients) %>% 
+  mutate(Month = round(Days/30.415) )
+biomarker_rna_metadata %>% group_by(Record.ID) %>% dplyr::count() # 26
+dim(biomarker_rna_metadata) #127 173
+
+# Molecules
+small_molecules_metadata <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/preprocessing/Lipidomics/Data/20220224_2_005_gp/small_molecules_metadata.rds"))
+small_molecules <- readRDS(paste0(path, "Biomarker\ 2/clad-bal-multiomics-bm2/preprocessing/Lipidomics/Data/20220224_2_005_gp/small_molecules.rds"))
+
+biomarker_small_molecules_metadata <- small_molecules_metadata %>% 
+  filter(Record.ID %in% biomarker_patients) %>%
+  mutate(Month = round(Days/30.415) )
+dim(biomarker_small_molecules_metadata) #153 164
+biomarker_small_molecules <- small_molecules[, c(biomarker_small_molecules_metadata$Patient_days)]
+dim(biomarker_small_molecules) #985 153
+
+biomarker_small_molecules_metadata %>% group_by(Record.ID) %>% dplyr::count() # 23
+```
+
+```{r}
+# merge immunosuppression data with data 
+tacro_biomarker_average <- tacro_biomarker %>%
+  group_by(Group, Record.ID, Month) %>%
+  arrange(Days) %>%
+  summarise(tacro_average_levels = mean(tacrolimus_level)) 
+
+pred_biomarker_average <- pred_biomarker %>%
+  filter(pulse == "No") %>% 
+  group_by(Group, Record.ID, Month) %>%
+  summarise(pred_average_levels = mean(prednisolone_pulse_dose_mgd)) 
+
+t_p_average <- tacro_biomarker_average %>% 
+  full_join(pred_biomarker_average) %>%
+  ungroup() %>%
+  mutate(Record_month = paste(Record.ID, Month, sep = "_")) %>%
+  dplyr::select(!c("Group", "Record.ID", "Month")) %>%
+  column_to_rownames("Record_month") %>%
+  dplyr::rename(Tacrolimus = tacro_average_levels, Prednisolone = pred_average_levels)
+```
+
+```{r}
+#rna_combined_heat <- as.data.frame(deseq_list$`group+months`$GroupCLAD$heat_sig) 
+
+biomarker_rna_combined <- deseq_list$`group+months`$GroupCLAD$sig_results_df %>%
+  filter(abs(log2FoldChange) >= 1) %>%
+  pull(Gene)
+
+# using actual normalised counts, not scaled counts
+rna_combined_heat <- assay(deseq_list$`group+months`$vsd)[biomarker_rna_combined, ] 
+
+rna_combined_heat_intervals <- rna_combined_heat %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Patient_days") %>%
+  left_join(biomarker_rna_metadata[, c("Patient_days", "Month", "Record.ID", "Group")]) %>%
+  dplyr::select(!c("Patient_days")) %>%
+  group_by(Group, Record.ID, Month) %>%
+  summarise(across(where(is.numeric), mean)) %>%
+  ungroup() %>%
+  mutate(Record_month = paste(Record.ID, Month, sep = "_")) %>%
+  dplyr::select(!c("Group", "Record.ID", "Month")) %>%
+  column_to_rownames("Record_month") %>%
+  t() %>%
+  as.data.frame()
+
+# correlate
+correlation_list <- list()
+
+df1 <- t_p_average %>% filter(rownames(.) %in% colnames(rna_combined_heat_intervals))
+df2 <- rna_combined_heat_intervals #%>% filter(rownames(.) %in% unique_features$Molecule)
+
+correlation_list[["Genes"]] <- correlate_datasets(df1 = df1, 
+                     df2 = df2, 
+                     df1_type = "Immunosuppression", df2_type = "Genes", 
+                     plots = FALSE, 
+                     coef_threshold = 0, correlation = "pearson", pval_threshold = 1)
+```
+
+```{r}
+#molecules_combined_heat <- as.data.frame(molecules_list$`group+months`$GroupCLAD$heat_sig_hits) 
+
+molecules_combined_heat_intervals <- biomarker_small_molecules[molecules_list$`group+months`$GroupCLAD$sig_hits$Molecule,] %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Patient_days") %>%
+  left_join(biomarker_small_molecules_metadata[, c("Patient_days", "Month", "Record.ID", "Group")]) %>%
+  dplyr::select(!c("Patient_days")) %>%
+  group_by(Group, Record.ID, Month) %>%
+  summarise(across(where(is.numeric), mean)) %>%
+  ungroup() %>%
+  mutate(Record_month = paste(Record.ID, Month, sep = "_")) %>%
+  dplyr::select(!c("Group", "Record.ID", "Month")) %>%
+  column_to_rownames("Record_month") %>%
+  t() %>%
+  as.data.frame()
+
+df1 <- t_p_average %>% filter(rownames(.) %in% colnames(molecules_combined_heat_intervals))
+df2 <- molecules_combined_heat_intervals #%>% filter(rownames(.) %in% unique_features$Molecule)
+
+correlation_list[["Molecules"]] <- correlate_datasets(df1 = df1, 
+                     df2 = df2, 
+                     df1_type = "Immunosuppression", df2_type = "Molecules", 
+                     plots = FALSE, 
+                     coef_threshold = 0, correlation = "pearson", pval_threshold = 1)
+```
+
+```{r}
+a <- correlation_list$Genes$coef_df %>% 
+  dplyr::rename(Feature = df2_name) 
+
+b <- correlation_list$Molecules$coef_df %>% 
+  dplyr::rename(Feature = df2_name) 
+
+corr_table <- rbind(a, b) %>% 
+  dplyr::rename(Immunosuppression = df1_name) %>%
+  mutate(Correlation2 = ifelse(pval >= 0.05, 0, Correlation),
+         Sign = case_when(Correlation2 > 0 ~ "+", 
+                          Correlation2 == 0 ~ "", 
+                          Correlation2 < 0 ~ "-"), 
+         Significance = case_when(pval >= 0.05 ~ "",
+                                      pval < 0.05 & pval >= 0.01 ~ "*",
+                                      pval < 0.01 & pval >= 0.001 ~ "**",
+                                      pval < 0.001 & pval >= 0.0001 ~ "***",
+                                      pval < 0.0001 ~ "****") )
+
+p <- 
+  ggplot(corr_table %>% filter(pval < 0.05), aes(x = Immunosuppression, y = Feature)) +
+    geom_point(aes(size = -log(pval)), colour = "grey", stroke = 1) +
+    geom_point(aes(colour = Correlation2, size = -log(pval))) +
+    geom_text(aes(size = -log(pval), label = Sign), nudge_y = 0.1) +
+    geom_text(aes(label = Significance), nudge_x = 0.15, nudge_y = 0.1) +
+    facet_grid(df2_type~., scales = "free", space = "free") +
+    labs(title = "Immunosuppression correlations", x = "", colour = "Pearson (r)", y = "Metabolite", size = "-Log(p-val)") +
+    theme +
+    theme(strip.text.y = element_text(angle = 0, size = 6),
+          legend.key.size = unit(0.4, 'cm'),
+          legend.title = element_text(size = 8),
+          legend.text = element_text(size = 6)) +
+    guides(fill = "none") +
+    scale_colour_gradient2(low = "grey" , mid = "white", high = "orange")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/summary-correlation.jpeg"), p, width = 13, height = 12, units = 'cm', dpi = 600) 
+```
+
+```{r}
+data <- rna_combined_heat_intervals %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Record_month") %>%
+  pivot_longer(!Record_month, names_to = "Gene", values_to = "Value") %>%
+  left_join(t_p_average %>% rownames_to_column("Record_month")) %>%
+  left_join(biomarker_rna_metadata %>% 
+              mutate(Record_month = paste(Record.ID, Month, sep = "_")) %>% 
+              dplyr::select(Record.ID, Record_month, Group) %>% distinct() )
+
+sig_features <- corr_table %>%
+  filter(pval < 0.05, Immunosuppression == "Tacrolimus") %>%
+  pull(Feature) %>%
+  unique()
+
+p <-
+
+  ggplot(data %>% filter(Gene %in% sig_features), aes(x = Tacrolimus, y = Value)) +
+    geom_smooth(aes(group = Gene), method = "lm", colour = "darkgrey", lty = "dashed") +
+    geom_point(aes(fill = Group), shape = 21, size = 1) +
+    theme +
+    labs(title = "Tacrolimus correlation", x = "Trough level", y = "Gene intensity", fill = "Group", 
+         caption = "Each dot point is the average per patient per month") +
+    facet_wrap(~Gene, ncol = 5, scales = "free_y") +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/tacro-genes-correlation.jpeg"), p, width = 22, height = 8, units = 'cm', dpi = 600) 
+
+
+sig_features <- corr_table %>%
+  filter(pval < 0.05, Immunosuppression == "Prednisolone") %>%
+  pull(Feature) %>%
+  unique()
+
+p <- 
+  ggplot(data %>% filter(Gene %in% sig_features), aes(x = Prednisolone, y = Value)) +
+    geom_smooth(aes(group = Gene), method = "lm", colour = "darkgrey", lty = "dashed") +
+    geom_point(aes(fill = Group), shape = 21, size = 1) +
+    theme +
+    labs(title = "Prednisolone correlation", x = "mg (daily)", y = "Gene intensity", fill = "Group", 
+         caption = "Each dot point is the average per patient per month") +
+    facet_wrap(~Gene, ncol = 5, scales = "free_y") +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/pred-genes-correlation.jpeg"), p, width = 22, height = 12, units = 'cm', dpi = 600) 
+```
+
+```{r}
+data <- molecules_combined_heat_intervals %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Record_month") %>%
+  pivot_longer(!Record_month, names_to = "Molecule", values_to = "Value") %>%
+  left_join(t_p_average %>% rownames_to_column("Record_month")) %>%
+  left_join(biomarker_small_molecules_metadata %>% 
+              mutate(Record_month = paste(Record.ID, Month, sep = "_")) %>% 
+              dplyr::select(Record.ID, Record_month, Group) %>% distinct() ) 
+unique(data$Molecule) # 9
+
+sig_features <- corr_table %>%
+  filter(pval < 0.05, Immunosuppression == "Tacrolimus") %>%
+  pull(Feature) %>%
+  unique()
+
+p <- 
+  ggplot(data %>% filter(Molecule %in% sig_features), aes(x = Tacrolimus, y = Value)) +
+    geom_smooth(aes(group = Molecule), method = "lm", colour = "darkgrey", lty = "dashed") +
+    geom_point(aes(fill = Group), shape = 21, size = 1) +
+    theme +
+    labs(title = "Tacrolimus correlation", x = "Trough level", y = "Metabolite intensity", fill = "Group", 
+         caption = "Each dot point is the average per patient per month") +
+    facet_wrap(~Molecule, ncol = 3, scales = "free_y") +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/tacro-molecules-correlation.jpeg"), p, width = 17, height = 5, units = 'cm', dpi = 600) 
+
+
+sig_features <- corr_table %>%
+  filter(pval < 0.05, Immunosuppression == "Prednisolone") %>%
+  pull(Feature) %>%
+  unique()
+
+p <- 
+  ggplot(data %>% filter(Molecule %in% sig_features), aes(x = Prednisolone, y = Value)) +
+    geom_smooth(aes(group = Molecule), method = "lm", colour = "darkgrey", lty = "dashed") +
+    geom_point(aes(fill = Group), shape = 21, size = 1) +
+    theme +
+    labs(title = "Prednisolone correlation", x = "mg (daily)", y = "Metabolite intensity", fill = "Group", 
+         caption = "Each dot point is the average per patient per month") +
+    facet_wrap(~Molecule, ncol = 3, scales = "free_y") +
+    scale_fill_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/pred-molecules-correlation.jpeg"), p, width = 17, height = 12 , units = 'cm', dpi = 600) 
+```
+
+# MOFA signature
+
+```{r}
+immunosuppression_list$tacro_matched_df <- match_immunosuppressants(mofa_metadata, immunosuppression_list$tacro_df[, c("Record.ID", "Days", "tacrolimus_level")], patients = unique(mofa_metadata$Record.ID), buffer = 3)
+
+immunosuppression_list$prednisolone_pulse_matched_df <- match_immunosuppressants(mofa_metadata, immunosuppression_list$prednisolone_pulse_df[, c("Record.ID", "Days", "prednisolone_pulse_dose_mgd")], patients = unique(mofa_metadata$Record.ID), buffer = 3)
+
+immunosuppression_list$mmf_matched_df <- match_immunosuppressants(mofa_metadata, immunosuppression_list$mmf_df[, c("Record.ID", "Days", "mmf_dose_gd")], patients = unique(mofa_metadata$Record.ID), buffer = 3)
+
+immunosuppression_list$azathioprine_matched_df <- match_immunosuppressants(mofa_metadata, immunosuppression_list$azathioprine_df[, c("Record.ID", "Days", "azathioprine_dose_mgd")], patients = unique(mofa_metadata$Record.ID), buffer = 3)
+
+mofa_metadata <- mofa_metadata %>%
+  left_join(immunosuppression_list$tacro_matched_df) %>%
+  left_join(immunosuppression_list$prednisolone_pulse_matched_df) %>%
+  left_join(immunosuppression_list$mmf_matched_df) %>%
+  left_join(immunosuppression_list$azathioprine_matched_df) 
+```
+
+```{r}
+d1 <- prednisolone_df %>%
+  filter(Days <= 900, Study != "Stable") 
+
+d2 <- pulse_df %>%
+  filter(Days <= 900, Study != "Stable") 
+  
+ggplot() +
+    # Overlay multiomics signature
+  geom_smooth(data = latent_factors, aes(x = Days, y = Factor1, group = Group, colour = Group), method = "lm", formula = y ~ ns(x, 2), linewidth = 0.8, se = FALSE) +
+  # Overlay pulse and prednisoone intake
+  geom_smooth(data = d1, aes(x = Days, y = prednisolone_dose_mgd, group = Group, colour = Group)) +
+  #geom_point(data = d1, aes(x = Days, y = prednisolone_dose_mgd, colour = Group, shape = pulse)) +
+  geom_point(data = d2, aes(x = Days, y = pulse_dose, colour = Group, shape = pulse) ) +
+  labs(title = "Prednisolone", shape = "Pulse") +
+  theme +
+  facet_wrap(~Record.ID) +
+  #scale_y_log10() +
+  scale_colour_manual(values = c("CLAD" = "orange", "CLAD-free" = "darkgrey")) +
+  scale_shape_manual(values = c("Yes" = 4, "No" = 21)) +
+  scale_y_continuous(name = "Value", sec.axis = sec_axis(trans=~.*1, name = "mg/d") )
+```
+
+
+
+
