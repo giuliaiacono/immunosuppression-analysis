@@ -380,25 +380,6 @@ bal_pred_matched <- bal_score_df %>%
   ungroup() 
 ```
 
-### Tissue
-
-```{r}
-tissue_tacro_matched <- tissue_score_df %>%
-  mutate(Record.ID = factor(Record.ID)) %>%
-  inner_join(tacro_all_matched) %>%
-  mutate(tacro_interp_scaled = rescale(tacrolimus_interp, to = c(-1, 1))) %>%
-  group_by(Record.ID) %>%
-  arrange(Record.ID, Days) %>%
-  ungroup()
-
-tissue_pred_matched <- tissue_score_df %>%
-  mutate(Record.ID = factor(Record.ID)) %>%
-  inner_join(pred_all_matched) %>%
-  mutate(pred_interp_scaled = rescale(pred_interp, to = c(-1, 1))) %>%
-  group_by(Record.ID) %>%
-  arrange(Record.ID, Days) %>%
-  ungroup()
-```
 
 ## Linear mixed model changes along immunosuppression dosage
 ### BAL
@@ -463,99 +444,6 @@ p <-
     facet_wrap(Time_interval~Module, scales = "free")
 
 ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-pred.jpeg"), p, width = 15, height = 12, units = 'cm', dpi = 600)
-```
-
-
-
-
-
-
-
-
-
-### Tissue
-#### Tacrolimus
-
-```{r}
-tissue_tacro_linear_test <- list()
-for (i in 1:length(names(t_cell_set))) {
-  
-  tissue_tacro_linear_test[[as.character(names(t_cell_set)[i])]] <- summary(lmerTest::lmer(TotalScore ~ Time_interval*tacrolimus_interp + (1|Record.ID), 
-                              data = tissue_tacro_matched %>% filter(Module == names(t_cell_set)[i]) ))$coefficients %>% 
-    as.data.frame() %>% 
-    mutate(Module = names(t_cell_set)[i]) 
-}
-
-tissue_tacro_linear_test_df <- bind_rows(tissue_tacro_linear_test) %>%
-  rownames_to_column("Test") %>% 
-  filter(!grepl("Intercept", Test)) %>%
-  filter(`Pr(>|t|)` < 0.05) %>%
-  filter(grepl("months:tac", Test)) 
-
-sig <- tissue_tacro_linear_test_df %>% pull(Module)
-
-p <- 
-  ggplot(tissue_tacro_matched %>% filter(Module %in% sig) %>% arrange(Record.ID, Days), aes(x = tacrolimus_interp, y = TotalScore)) +
-    geom_point() +
-    geom_smooth(method = "lm") +
-    theme +
-    labs(title = "Modules with significant interaction with Tacrolimus", y = "Score", x = "Tacrolimus (trough)") +
-    facet_wrap(Module~Time_interval, scales = "free")
-
-ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/tissue-singscore-tacro.jpeg"), p, width = 15, height = 13, units = 'cm', dpi = 600)
-```
-
-
-#### Prednisolone
-
-```{r}
-tissue_pred_linear_test <- list()
-for (i in 1:length(names(t_cell_set))) {
-  
-  tissue_pred_linear_test[[as.character(names(t_cell_set)[i])]] <- summary(lmerTest::lmer(TotalScore ~ Time_interval*pred_interp + (1|Record.ID), 
-                              data = tissue_pred_matched %>% filter(Module == names(t_cell_set)[i]) ))$coefficients %>% 
-    as.data.frame() %>% 
-    mutate(Module = names(t_cell_set)[i]) 
-
-}
-
-tissue_pred_linear_test_df <- bind_rows(tissue_pred_linear_test) %>% 
-  rownames_to_column("Test") %>% 
-  filter(!grepl("Intercept", Test)) %>%
-  filter(`Pr(>|t|)` < 0.05) %>%
-  filter(grepl("months:pred", Test)) 
-
-sig <- tissue_pred_linear_test_df %>% pull(Module)
-
-p <- 
-  ggplot(tissue_pred_matched %>% filter(Module %in% sig[1]) %>% arrange(Record.ID, Days), aes(x = pred_interp, y = TotalScore)) +
-    geom_point() +
-    geom_smooth(method = "lm") +
-    theme +
-    labs(title = "Modules with significant interaction with Prednisolone", y = "Score", x = "Prednisolone (mg/kg)") +
-    facet_wrap(Module~Time_interval, scales = "free", ncol = 3)
-
-ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/tissue-singscore-pred.jpeg"), p, width = 15, height = 12, units = 'cm', dpi = 600)
-```
-
-
-# Tissue over time DE analysis
-
-```{r}
-design <- model.matrix(~Days_interval2 + Transplant_indication, microarray.metadata) # same for tx indication
-dupcor <- duplicateCorrelation(microarray_data_common, design = design, block = microarray.metadata$Record.ID)
-
-microarray_dge <- DGEList(microarray_data_common, 
-                          samples = microarray.metadata, 
-                          remove.zeros = TRUE)
-microarray_dge <- calcNormFactors(microarray_dge)
-v <- voom(microarray_dge, design, plot=TRUE)
-vfit <- lmFit(v, design, block = microarray.metadata$Record.ID, correlation = dupcor$consensus)
-efit <- eBayes(vfit)
-summary(decideTests(efit, lfc = 0.1, p.value = 0.1)) 
-
-topTreat(efit, coef="Days_interval2>12 months", n=Inf) %>% filter(adj.P.Val < 0.01)
-
 ```
 
 
