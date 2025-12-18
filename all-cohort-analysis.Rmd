@@ -59,11 +59,11 @@ ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/all-imm
 
 ```{r}
 all_rna_m <- all_rna_metadata[, c("Patient_days", "Record.ID", "Days", "Months", "Group", "Lymphocytes")] %>%
-  left_join(all_rna_metadata %>% remove_rownames() %>% dplyr::select("Record.ID", "clad_day_clinical") %>% distinct() ) %>%
+  #left_join(all_rna_metadata %>% remove_rownames() %>% dplyr::select("Record.ID", "clad_day_clinical") %>% distinct() ) %>%
   mutate(Record.ID = factor(Record.ID),
          Dataset = "RNA",
-         days_to_clad = clad_day_clinical - Days,
-         clad_status = ifelse(days_to_clad > 0, "Before", "After"),
+         #days_to_clad = clad_day_clinical - Days,
+         #clad_status = ifelse(days_to_clad > 0, "Before", "After"),
          Immunosuppression_interval = case_when(Days <= 92 ~ "<3 months",
                                          Days > 92 & Days <= 183 ~ "3-6 months",
                                          Days > 183 & Days <= 365 ~ "7-12 months",
@@ -72,7 +72,8 @@ all_rna_m <- all_rna_metadata[, c("Patient_days", "Record.ID", "Days", "Months",
          Immunosuppression_interval_unique = case_when(Days <= 183 ~ "<6 months",
                                          Days > 183 & Days <= 365 ~ "7-12 months",
                                          Days > 365 ~ ">12 months"), 
-         Immunosuppression_interval_unique = factor(Immunosuppression_interval_unique, c("<6 months", "7-12 months", ">12 months")),
+         Immunosuppression_interval_unique = factor(Immunosuppression_interval_unique, c("<6 months", "7-12 months", ">12 months"))#,
+         #Group = ifelse(Record.ID %in% clad_update, "CLAD", as.character(Group))
          )
 ```
 
@@ -93,7 +94,8 @@ tacro <- all_rna_m %>%
   mutate(median_tacrolimus_level_patient = median(tacrolimus_level, na.rm = TRUE)) %>% 
   ungroup() %>%
   group_by(Immunosuppression_interval_unique) %>% 
-  mutate(median_interval = median(median_tacrolimus_level_patient, na.rm = TRUE), # overall median per interval using interval medians per patient
+  mutate(tacro_tertile = ntile(median_tacrolimus_level_patient, 3), # assign based on median patient levels per interval
+         median_interval = median(median_tacrolimus_level_patient, na.rm = TRUE), # overall median per interval using interval medians per patient
          within_median_interval = case_when(median_tacrolimus_level_patient < median_interval ~ "Lower",
                                   median_tacrolimus_level_patient > median_interval ~ "Higher",
                                   median_tacrolimus_level_patient == median_interval ~ "Lower"), # assign equal to lower
@@ -134,6 +136,7 @@ tacro_iqr <- bind_rows(t_p)
 tacro_all_matched <- tacro %>%
   left_join(tacro_iqr)
 
+# assign based on median interval
 a <- tacro_all_matched %>% 
   filter(Immunosuppression_interval_unique == "<6 months") %>%
   dplyr::select(Record.ID, within_median_interval) %>%
@@ -141,6 +144,23 @@ a <- tacro_all_matched %>%
   dplyr::rename(patient_class_median = within_median_interval)
 
 a %>% dplyr::count(patient_class_median) # 31 and 23
+
+# assign patient classes
+tacro_all_matched <- tacro_all_matched %>%
+  left_join(a)
+
+
+# assign based on tertile classes
+a <- tacro_all_matched %>% 
+  filter(Immunosuppression_interval_unique == "<6 months") %>%
+  dplyr::select(Record.ID, tacro_tertile) %>%
+  distinct() %>%
+  group_by(Record.ID) %>%
+  slice_max(tacro_tertile) %>%
+  dplyr::rename(patient_class_tertile = tacro_tertile) %>%
+  ungroup()
+
+a %>% dplyr::count(patient_class_tertile) # 13, 19 and 22
 
 # assign patient classes
 tacro_all_matched <- tacro_all_matched %>%
@@ -197,6 +217,21 @@ tacro_all_matched %>%
   mutate(percentage = round(100*n/sum(n)) )
 ```
 
+```{r}
+# within tertiles 
+p <- 
+  
+  tacro_all_matched %>% 
+  ggplot(aes(x = Immunosuppression_interval_unique, y = Record.ID)) +
+    geom_tile(aes(fill = tacro_tertile)) +
+    theme_bw() +
+    theme(axis.text.y = element_blank(), plot.title = element_text(face = "bold") ) +
+    labs(x = "Immunosuppression interval", y = "Patient", title = "Tacrolimus trough tertile split", fill = "Median Tacrolimus\ntrough level") +  
+    facet_grid(Group+patient_class_tertile~., scales = "free", space = "free")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/patient-classes-tertile-interval-tacro.jpeg"), p, width = 11, height = 12, units = 'cm', dpi = 600) 
+```
+
 ## Patients above or below median for interval during the first 6 months
 
 ```{r}
@@ -234,6 +269,32 @@ tacro_all_median_p <- tacro_all_matched %>%
 ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/tacrolimus-range-comparison-months-median-groups.jpeg"), p, width = 12, height = 10, units = 'cm', dpi = 600)
 ```
 
+## Tertile
+
+```{r}
+tacro_all_tertile <- tacro_all_matched %>%
+  mutate(Months = round(Months)) %>%
+  group_by(patient_class_tertile, Months) %>%
+  summarise(tacro_tertile_levels = median(tacrolimus_level, na.rm = TRUE)) # median levels of tacro per tertile group
+
+  p <- 
+    
+  ggplot() +
+    geom_rect(data = expected_tacro %>% filter(Months <= 27), aes(xmin = Months-0.1, xmax = Months+0.1, ymin = exp_min, ymax = exp_max ), alpha = 0.2) +
+    
+    geom_path(data = tacro_all_tertile, aes(x = Months, y = tacro_tertile_levels, group = patient_class_tertile), size = 0.3) +
+    geom_point(data = tacro_all_tertile, aes(x = Months, y = tacro_tertile_levels, fill = patient_class_tertile), shape = 21) +
+    
+    labs(title = "Tacrolimus", y = "Trough level (median per month)", fill = "Tacrolimus trough level",
+         x = "Time post-transplant (months)") +
+    theme +
+    theme(legend.position = "bottom")  +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24, 27))
+  
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/tacrolimus-range-comparison-months-tertile-groups.jpeg"), p, width = 12, height = 10, units = 'cm', dpi = 600)
+```
+
+
 # ------------------------------------------
 # Prednisolone
 ## Calculations
@@ -249,7 +310,7 @@ pred_all <- all_immunosuppression  %>%
 pred_all_matched <- all_rna_m %>%
   full_join(pred_all) %>%
   full_join(weight_df[, c("Record.ID", "weight", "Days")] %>% mutate(Record.ID = factor(Record.ID))) %>% 
-  dplyr::select(Record.ID, Days, Patient_days, Months, Group, pulse, prednisolone_pulse_dose_mgd, weight) %>%
+  dplyr::select(Record.ID, Days, Patient_days, Months, Group, pulse, prednisolone_pulse_dose_mgd, weight, Immunosuppression_interval_unique) %>%
   arrange(Record.ID, Days) %>%
   group_by(Record.ID) %>%
   mutate(weight_interp = round(na.approx(weight, maxgap = 6, rule = 2, na.rm = FALSE), 2 )) %>%
@@ -263,7 +324,8 @@ pred_all_matched <- all_rna_m %>%
   
   # calculate median per interval per patient
   group_by(Record.ID, Immunosuppression_interval_unique) %>%
-  mutate(median_pred_level_patient = median(prednisolone_pulse_dose_mgd_per_kg, na.rm = TRUE)) %>%
+  mutate(pred_tertile = ntile(prednisolone_pulse_dose_mgd_per_kg, 3), # assign based on median patient levels per interval
+    median_pred_level_patient = median(prednisolone_pulse_dose_mgd_per_kg, na.rm = TRUE)) %>%
   ungroup() %>%
   group_by(Immunosuppression_interval_unique) %>% 
   # calculate median per interval
@@ -284,6 +346,22 @@ a <- pred_all_matched %>%
   dplyr::rename(patient_class_median = within_median_interval)
 
 a %>% dplyr::count(patient_class_median) # 23 and 31
+
+# assign patient classes
+pred_all_matched <- pred_all_matched %>%
+  left_join(a)
+
+# assign based on tertile classes
+a <- pred_all_matched %>% 
+  filter(Immunosuppression_interval_unique == "<6 months") %>%
+  dplyr::select(Record.ID, pred_tertile) %>%
+  distinct() %>%
+  group_by(Record.ID) %>%
+  slice_max(pred_tertile) %>%
+  dplyr::rename(patient_class_tertile = pred_tertile) %>%
+  ungroup()
+
+a %>% dplyr::count(patient_class_tertile) # 
 
 # assign patient classes
 pred_all_matched <- pred_all_matched %>%
@@ -371,6 +449,33 @@ pred_all_median_p <- pred_all_matched %>%
   
 ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/pred-range-comparison-months-median-groups.jpeg"), p, width = 12, height = 10, units = 'cm', dpi = 600)
 ```
+
+## Tertile
+
+```{r}
+pred_all_tertile <- pred_all_matched %>%
+  filter(pulse == "No") %>% 
+  mutate(Months = round(Months)) %>%
+  group_by(patient_class_tertile, Months) %>%
+  summarise(pred_tertile_levels = median(prednisolone_pulse_dose_mgd_per_kg, na.rm = TRUE)) %>%
+  filter(!is.na(pred_tertile_levels))
+  p <- 
+    
+  ggplot() +
+    geom_rect(data = expected_tacro %>% filter(Months <= 27), aes(xmin = Months-0.1, xmax = Months+0.1, ymin = exp_min, ymax = exp_max ), alpha = 0.2) +
+    
+    geom_path(data = pred_all_tertile, aes(x = Months, y = pred_tertile_levels, group = patient_class_tertile), size = 0.3) +
+    geom_point(data = pred_all_tertile, aes(x = Months, y = pred_tertile_levels, fill = patient_class_tertile), shape = 21) +
+    
+    labs(title = "Prednisolone", y = "Dosage (mg/kg)", fill = "Prednisolone (mg/kg)",
+         x = "Time post-transplant (months)") +
+    theme +
+    theme(legend.position = "bottom")  +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24, 27))
+  
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/pred-range-comparison-months-tertile-groups.jpeg"), p, width = 12, height = 10, units = 'cm', dpi = 600)
+```
+
 # -----------------------------------------
 # Azathioprine and MMF
 ## Calculations
@@ -491,38 +596,46 @@ t <- tacro_all_matched %>%
   dplyr::select(Record.ID, Immunosuppression_interval_unique, median_tacrolimus_level_patient) %>%
   distinct() %>%
   filter(Immunosuppression_interval_unique == "<6 months") %>%
-  arrange(desc(median_tacrolimus_level_patient))
+  arrange(desc(median_tacrolimus_level_patient)) %>% 
+  mutate(tacro_rank = c(1:54),
+         tacro_class_rank = c(rep("Top 50%", 27), rep("Bottom 50%", 27)) )
 
 p <- pred_all_matched %>% 
   dplyr::select(Record.ID, Immunosuppression_interval_unique, median_pred_level_patient) %>%
   distinct() %>%
   filter(Immunosuppression_interval_unique == "<6 months") %>%
-  arrange(desc(median_pred_level_patient))
+  arrange(desc(median_pred_level_patient)) %>% 
+  mutate(pred_rank = c(1:54),
+         pred_class_rank = c(rep("Top 50%", 27), rep("Bottom 50%", 27)))
 
 a <- aza_all_matched %>% 
   dplyr::select(Record.ID, Immunosuppression_interval_unique, median_aza_level_patient_scaled) %>%
   distinct() %>%
   filter(Immunosuppression_interval_unique == "<6 months") %>%
-  arrange(desc(median_aza_level_patient_scaled))
+  arrange(desc(median_aza_level_patient_scaled)) %>% 
+  mutate(aza_rank = c(1:29),
+         aza_class_rank = c(rep("Top 50%", 15), rep("Bottom 50%", 14)))
 
 m <- mmf_all_matched %>% 
   dplyr::select(Record.ID, Immunosuppression_interval_unique, median_mmf_level_patient_scaled) %>%
   distinct() %>%
   filter(Immunosuppression_interval_unique == "<6 months") %>%
-  arrange(desc(median_mmf_level_patient_scaled)) 
+  arrange(desc(median_mmf_level_patient_scaled))  %>% 
+  mutate(mmf_rank = c(1:34),
+         mmf_class_rank = c(rep("Top 50%", 17), rep("Bottom 50%", 17)))
 
 ranks <- t %>% 
   full_join(p) %>%
   full_join(a) %>%
   full_join(m) %>%
-  mutate(median_aza_level_patient_scaled = ifelse(is.na(median_aza_level_patient_scaled), 1, median_aza_level_patient_scaled),
+  mutate(median_aza_level_patient_scaled = ifelse(is.na(median_aza_level_patient_scaled), 1, median_aza_level_patient_scaled), # assign 1 for missing patients so can multiply scores
          median_mmf_level_patient_scaled = ifelse(is.na(median_mmf_level_patient_scaled), 1, median_mmf_level_patient_scaled),
          median_mmf_level_patient_scaled = ifelse(median_mmf_level_patient_scaled == 0, 1, median_mmf_level_patient_scaled),
-         combined_score = median_tacrolimus_level_patient * median_pred_level_patient * median_aza_level_patient_scaled * median_mmf_level_patient_scaled) %>% 
+         combined_score = median_tacrolimus_level_patient * median_pred_level_patient * median_aza_level_patient_scaled * median_mmf_level_patient_scaled) %>% # have to do this way and not using ranks or cannot take into account patients that do not take aza or mmf
   arrange(desc(combined_score)) %>%
-  dplyr::select(Record.ID, combined_score) %>%
-  mutate(patient_rank = 1:54,
-         patient_class_rank = c(rep("Top 50%", 27), rep("Bottom 50%", 27)) )
+  mutate(combined_rank = 1:54,
+         combined_class_rank = c(rep("Top 50%", 27), rep("Bottom 50%", 27)) ) %>%
+  dplyr::select(!c("Immunosuppression_interval_unique", "median_tacrolimus_level_patient", "median_pred_level_patient", "median_aza_level_patient_scaled", "median_mmf_level_patient_scaled" ) )
 ```
 
 
@@ -535,46 +648,76 @@ Define gene sets for each cell type of interest.
 cell_markers <- read.csv("PanglaoDB_markers_27_Mar_2020.csv") %>%
   filter(organ %in% c("Lungs", "Immune system"), species %in% c("Hs", "Mm Hs"), gene.type == "protein-coding gene") %>% 
   filter(cell.type %in% c("Alveolar macrophages", "B cells", "Monocytes", "Neutrophils", 
-                          "T cytotoxic cells", "T helper cells", "T regulatory cells")) %>%
+                          "T cytotoxic cells", "T regulatory cells")) %>% #"T helper cells", 
   group_by(cell.type) %>%
-  arrange(ubiquitousness.index) %>%
-  slice_min(ubiquitousness.index, n = 50)
+  arrange(ubiquitousness.index, desc(specificity_human)) %>% # low ubiquity and high specificity 
+  slice_min(ubiquitousness.index, n = 100) %>%
+  slice_max(specificity_human, n = 50) %>%
+  filter(!official.gene.symbol %in% c("EBF1", "IGLL1", "MZB1", "MUM1", "TNFRSF17", "PRTN3", "LRRC32")) # missing in RNAseq dataset
 
 cell_set <- cell_markers %>%
   group_by(cell.type) %>%
   summarise(genes = list(official.gene.symbol)) %>%
   deframe()
 
-cell_set[["CLAD signature"]] <- c("ELANE", "MPO", "AZU1", "CTSG", "DEFA3", "CAMP", "S100A8", "S100A9", "LTF", "MMP8", "LCN2", "CEACAM8", "CD63", "CD177", "VNN2", "MMP9", "CHST15", "HLA-DRB5", "SIGLEC12", "SULF2", "CEACAM3", "CSF3R", "CXCL2", "IL10", "NINJ1", "VEGFA", "VNN1", "ADORA2A")
+# add CLAD signature
+cell_set[["CLAD RNAseq signature"]] <- c("ELANE", "MPO", "AZU1", "CTSG", "DEFA3", "CAMP", "S100A8", "S100A9", "LTF", "MMP8", "LCN2", "CEACAM8", "CD63", "CD177", "VNN2", "MMP9", "CHST15", "HLA-DRB5", "SIGLEC12", "SULF2", "CEACAM3", "CSF3R", "CXCL2", "IL10", "NINJ1", "VEGFA", "VNN1", "ADORA2A")
 
-# add more genes to cytotoxic gene set
-cell_set[["T cytotoxic cells"]] <- c("CD8A", "CD8B","PRF1","GZMA","GZMB", "GZMK","GZMH","GNLY","NKG7","TNF","CCL3","CCL4","CCL5", "KLRD1", "FASLG","IFNG","XCL1")
+# add more genes
+cell_set[["T cytotoxic cells"]] <- unique(c(cell_set[["T cytotoxic cells"]], c("CD8A", "CD8B","PRF1","GZMA","GZMB", "GZMK","GZMH","GNLY","NKG7","TNF","CCL3","CCL4","CCL5", "KLRD1", "FASLG","IFNG","XCL1") ))
+#cell_set[["T helper cells"]] <- unique(c(cell_set[["T helper cells"]], c("TGFB1","TIGIT","NT5E", "IDO1", "PDCD1LG2", "HMOX1", "CD163") ))
+cell_set[["T regulatory cells"]] <- unique(c(cell_set[["T regulatory cells"]], c("TNF","IL18RAP","CCR5","NKG7","CCL5","IFNG","FASLG","IL12RB2") ))
 
-table(cell_markers$cell.type)
+# remove unspecific and overlapping markers
+cell_set[["Alveolar macrophages"]] <- setdiff(cell_set[["Alveolar macrophages"]], c("TRIM25", "MPP1", "G0S2", "GAL", "KLHDC4", "GDA", "GNGT2", "PLET1", "CXCL2", "IL1B"))
+cell_set[["B cells"]] <- setdiff(cell_set[["B cells"]], c("CD2", "CD14", "HMGA1", "PTPRC", "SPCS3", "CD69", "CD27", "HLA-DRA", "CXCR4", "IFIT3", "CD40", "CD86"))
+cell_set[["Monocytes"]] <- setdiff(cell_set[["Monocytes"]], c("PTPRC", "CD7", "SPN", "PECAM1", "ITGAX", "FN1", "MRC1", "PRTN3", "ACE", "CD44", "S100A4", "CLEC7A", "S100A8", "FCGR3A", "CSF3R", "HLA-DRA", "CD40", "CD86", "SELL"))
+cell_set[["Neutrophils"]] <- setdiff(cell_set[["Neutrophils"]], c("S100A4", "CD14", "CD33", "CEACAM1", "PECAM1", "MYLK", "CFP", "MME", "SLC1A5", "ADPGK", "OAS3", "CRP", "CD24", "CCL3", "IL1R2", "CCR1", "IL1B", "ITGAX", "S100A9", "SELL", "FCGR3A"))
+cell_set[["T cytotoxic cells"]] <- setdiff(cell_set[["T cytotoxic cells"]], c("CD2", "CD5", "KLRD1", "CCL3", "CD27", "NKG7", "TNF", "CCL5"))
+#cell_set[["T helper cells"]] <- setdiff(cell_set[["T helper cells"]], c("CD3D", "CD3G", "CD2", "CD5", "CD28", "CCR7", "NFKB1", "NFATC2", "CXCR4", "LTA", "TNF", "IL2", "KLRD1", "NR3C1", "PPARG"))
+cell_set[["T regulatory cells"]] <- setdiff(cell_set[["T regulatory cells"]], c("CD4", "FOLR1", "CNGB1", "IZUMO1R", "CCR5", "IFNG", "NKG7", "TNF", "CCL5", "FASLG", "SELL"))
 
-#intersect(cell_set$Neutrophils, cell_set2$Neutrophils)
-#intersect(cell_set$`T cytotoxic cells`, cell_set2$`TCD8 Cytotoxic`)
-#intersect(cell_set$`T helper cells`, cell_set2$`TCD4 Helper`)
-#intersect(cell_set$`T regulatory cells`, cell_set2$`T Regulatory`)
+# check gene overlap
+intersect(cell_set$Monocytes, cell_set$`B cells`) #"HLA-DRA" "CXCR4"   "IFIT3"   "CD40"    "CD86" 
+intersect(cell_set$Monocytes, cell_set$`T regulatory cells`) #SELL
+intersect(cell_set$`T cytotoxic cells`, cell_set$`T regulatory cells`) #"NKG7"  "TNF"   "CCL5"  "FASLG"
+#intersect(cell_set$`T helper cells`, cell_set$`T regulatory cells`) #"TNFRSF4" "CCR4"    "FOXP3"   "IL10"    "NT5E" 
+intersect(cell_set$Neutrophils, cell_set$Monocytes) #"S100A9" "S100A8" "SELL"   "FCGR3A" "CSF3R" 
+intersect(cell_set$`Alveolar macrophages`, cell_set$Monocytes) #"S100A4" "CLEC7A"
+intersect(cell_set$Neutrophils, cell_set$`Alveolar macrophages`) #"CXCL2" "IL1B"  "ITGAX" "CCL3" 
+intersect(cell_set$`B cells`, cell_set$`T cytotoxic cells`) #"CD69" "CD27"
+#intersect(cell_set$Neutrophils, cell_set$`T helper cells`) #"IL1R2" "CCR1"
+intersect(intersect(cell_set$`Alveolar macrophages`, cell_set$`T cytotoxic cells`), cell_set$Neutrophils) #CCL3
+intersect(cell_set$Neutrophils, cell_set$`B cells`) #CD24
 
 cell_groups <- data.frame(Module = names(cell_set),
-                            Class = c("Myeloid", "B cells", "Myeloid", "Neutrophils", "T cells", "T cells", "T cells", "Other")) %>%
+                            Class = c("Myeloid", "B cells", "Myeloid", "Neutrophils", "T cells", "T cells", "Other")) %>%
   mutate(Class = factor(Class, levels = c("B cells", "T cells", "Neutrophils", "Myeloid", "Other")))
+
+ggVennDiagram(cell_set, force_upset = TRUE)
 ```
+
+# Molecule sets
+
+Define molecule sets by class
 
 ```{r}
-cell_set2 <- list(
-  
-  "TCD8 Cytotoxic" = c("CD8A","CD8B","PRF1","GZMB","GZMA","GZMK","GZMH","GNLY","NKG7","TNF","CCL3","CCL4","CCL5", "KLRD1", "FASLG","IFNG","XCL1"), 
-  
-  "T Regulatory" = c("IL2RA","CTLA4","IKZF2","TNFRSF18","ENTPD1","TGFB1","IL10","TIGIT","NT5E", "IDO1", "PDCD1LG2", "HMOX1", "IL1RN","CD163","LGALS9", "FOXP3"), 
+mol_classes <- names(head(sort(table(small_molecules_info$MAIN_CLASS), decreasing = TRUE), n = 10))
 
-  "TCD4 Helper" = c("TBX21","TNF","IL18R1","IL18RAP","CXCR3","CCR5","NKG7","CCL5","IFNG","FASLG","IL12RB2") )
+mol_set <- list()
+
+for (i in mol_classes){
   
-cell_groups <- data.frame(Module = names(cell_set),
-                            Class = c("T cell", "T cell", "T cell", "Neutrophil", "Myeloid")) %>%
-  mutate(Class = factor(Class, levels = c("T cell", "Neutrophil", "Myeloid")))
+  mol_set[[as.character(i)]] <- small_molecules_info %>% 
+    filter(MAIN_CLASS == i) %>%
+    pull(shortname) %>%
+    head(., n = 30)
+}
+
+mol_set[["CLAD molecules signature"]] <- molecules_list$`group+months`$GroupCLAD$sig_hits %>%
+  slice_max(abs(logFC), n = 30) %>% pull(Molecule)
 ```
+
 
 # Singscore
 
@@ -599,8 +742,28 @@ for (i in names(cell_set)){
     mutate(Module = i) 
 }
 
-bal_score_df <- bind_rows(transcriptomics_score_list) %>% 
-  left_join(all_rna_metadata[, c("Record.ID", "Months", "Group", "Patient_days", "Days", "Days_interval2")]) %>%
+# Molecules
+mol_ranks <- rankGenes(small_molecules)
+
+#compute scores
+mol_score_list <- list()
+
+for (i in names(mol_set)){
+  mol_score_list[[i]] <- simpleScore(mol_ranks, mol_set[[i]]) %>% 
+    rownames_to_column("Patient_days") %>%
+    mutate(Module = i) 
+}
+
+a <- bind_rows(transcriptomics_score_list) %>% 
+  mutate(Dataset = "RNAseq") %>%
+  left_join(all_rna_metadata[, c("Record.ID", "Months", "Group", "Patient_days", "Days", "Days_interval2")])
+
+b <- bind_rows(mol_score_list) %>% 
+  mutate(Dataset = "Molecules") %>%
+  left_join(small_molecules_metadata[, c("Record.ID", "Months", "Group", "Patient_days", "Days", "Days_interval2")])
+
+bal_score_df <- a %>%
+  full_join(b) %>%
   mutate(Record.ID = as.factor(Record.ID),
          Immunosuppression_interval = case_when(Days <= 92 ~ "<3 months",
                                          Days > 92 & Days <= 183 ~ "3-6 months",
@@ -616,55 +779,243 @@ bal_score_df <- bind_rows(transcriptomics_score_list) %>%
                                    Days >= 365 ~ ">12 months"), 
          Time_interval = factor(Time_interval, c("<6 months", "6-12 months", ">12 months"))) %>%
   left_join(cell_groups) %>%
-  inner_join(ranks) %>%
+  left_join(ranks) %>%
   arrange(Record.ID, Days) %>%
   ungroup()
 ```
 
 ## Scores post-transplant
+### All patients
 
 ```{r}
 # all
 p <-
-  ggplot(bal_score_df, aes(x = Months, y = TotalScore)) +
+  ggplot(bal_score_df %>% filter(Dataset == "RNAseq"), aes(x = Months, y = TotalScore)) +
     geom_point(size = 0.1) +
     geom_smooth() +
     #geom_smooth(aes(group = Group, colour = Group)) +
     labs(title = "Module scores post-transplant", y = "Score") +
     theme +
+  theme(strip.text = element_text(size = 6)) +
     facet_wrap(.~Module, scales = "free") +
   scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27))
 
-ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-months.jpeg"), p, width = 14, height = 10, units = 'cm', dpi = 600)
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-months-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+
+p <-
+  ggplot(bal_score_df %>% filter(Dataset == "Molecules"), aes(x = Months, y = TotalScore)) +
+    geom_point(size = 0.1) +
+    geom_smooth() +
+    #geom_smooth(aes(group = Group, colour = Group)) +
+    labs(title = "Module scores post-transplant", y = "Score") +
+    theme +
+  theme(strip.text = element_text(size = 6)) +
+    facet_wrap(.~Module, scales = "free") +
+  scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27))
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-months-mol.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
 ```
 
+### By drug separate
+
 ```{r}
-#stratify by patient class
-p <- 
-  ggplot(bal_score_df, aes(x = Months, y = TotalScore)) +
+by_drug <- function(data, drug_class_rank, title){
+  
+  p <- 
+  ggplot(data, aes(x = Months, y = TotalScore)) +
     geom_point(size = 0.1) +
-    geom_smooth(aes(group = patient_class_rank, colour = patient_class_rank), se = FALSE) +
-    labs(title = "Module scores post-transplant", y = "Score", colour = "Patient group") +
+    geom_smooth(aes_string(group = drug_class_rank, colour = drug_class_rank), se = FALSE) +
+    labs(title = title, y = "Score", colour = "Patient group") +
     theme +
-  scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27)) +
+    theme(strip.text = element_text(size = 6)) +
+  scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 20)) +
   facet_wrap(~Module, scales = "free") +
   scale_colour_manual(values = c("Top 50%" = "#fd5200", "Bottom 50%" = "#00cfc1"))
-
-ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-patient-groups.jpeg"), p, width = 16, height = 10, units = 'cm', dpi = 600)
+  return(p)
+  
+}
 ```
 
 ```{r}
+# RNAseq
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "RNAseq"), 
+             drug_class_rank = "tacro_class_rank", 
+             title = "Module scores post-transplant - Tacrolimus score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-tacro-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "RNAseq"), 
+             drug_class_rank = "pred_class_rank", 
+             title = "Module scores post-transplant - Prednisolone score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-pred-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "RNAseq", !is.na(aza_class_rank)), 
+             drug_class_rank = "aza_class_rank", 
+             title = "Module scores post-transplant - Azathioprine score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-aza-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "RNAseq", !is.na(mmf_class_rank)), 
+             drug_class_rank = "aza_class_rank", 
+             title = "Module scores post-transplant - MMF score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-mmf-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "RNAseq"), 
+             drug_class_rank = "combined_class_rank", 
+             title = "Module scores post-transplant - MMF score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-combined-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+```
+
+```{r}
+# Molecules
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "Molecules"), 
+             drug_class_rank = "tacro_class_rank", 
+             title = "Module scores post-transplant - Tacrolimus score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-tacro-mol.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "Molecules"), 
+             drug_class_rank = "pred_class_rank", 
+             title = "Module scores post-transplant - Prednisolone score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-pred-mol.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "Molecules", !is.na(aza_class_rank)), 
+             drug_class_rank = "aza_class_rank", 
+             title = "Module scores post-transplant - Azathioprine score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-aza-mol.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "Molecules", !is.na(mmf_class_rank)), 
+             drug_class_rank = "aza_class_rank", 
+             title = "Module scores post-transplant - MMF score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-mmf-mol.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+p <- by_drug(data = bal_score_df %>% filter(Months <= 20, Dataset == "Molecules"), 
+             drug_class_rank = "combined_class_rank", 
+             title = "Module scores post-transplant - MMF score")
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-rank-combined-mol.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+```
+
+### By CLAD
+
+```{r}
+# RNAseq
 #stratify by group
 p <- 
-  ggplot(bal_score_df, aes(x = Months, y = TotalScore)) +
+  ggplot(bal_score_df %>% filter(Months <= 20), aes(x = Months, y = TotalScore)) +
     geom_point(size = 0.1) +
     geom_smooth(aes(group = Group, colour = Group), se = FALSE) +
     labs(title = "Module scores post-transplant", y = "Score", colour = "Patient group") +
     theme +
+  theme(strip.text = element_text(size = 6)) +
   scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27)) +
   facet_wrap(~Module, scales = "free") 
 
-ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-clad.jpeg"), p, width = 16, height = 10, units = 'cm', dpi = 600)
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-clad2-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+# Add new CLAD patients
+clad_update <- read.csv("clad_update.csv") %>% filter(Group == "CLAD") %>% pull(Record.ID)
+bal_score_df <- bal_score_df %>%
+  mutate(Group2 = ifelse(Record.ID %in% clad_update, "CLAD", as.character(Group)),
+         Group2 = factor(Group2, levels = c("CLAD-free", "CLAD")))
+
+p <- 
+  ggplot(bal_score_df %>% filter(Months <= 20), aes(x = Months, y = TotalScore)) +
+    geom_point(size = 0.1) +
+    geom_smooth(aes(group = Group2, colour = Group2), se = FALSE) +
+    labs(title = "Module scores post-transplant", y = "Score", colour = "Patient group") +
+    theme +
+  theme(strip.text = element_text(size = 6)) +
+  scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27)) +
+  facet_wrap(~Module, scales = "free") 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-clad-update2-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
 
 #main visible effect in TCD8 cells
 ```
+
+```{r}
+# Molecules
+#stratify by group
+p <- 
+  ggplot(bal_score_df %>% filter(Months <= 20, Dataset == "RNAseq"), aes(x = Months, y = TotalScore)) +
+    geom_point(size = 0.1) +
+    geom_smooth(aes(group = Group, colour = Group), se = FALSE) +
+    labs(title = "Module scores post-transplant", y = "Score", colour = "Patient group") +
+    theme +
+  theme(strip.text = element_text(size = 6)) +
+  scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27)) +
+  facet_wrap(~Module, scales = "free") 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-clad2-rna.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+
+
+p <- 
+  ggplot(bal_score_df %>% filter(Months <= 20, Dataset == "Molecules"), aes(x = Months, y = TotalScore)) +
+    geom_point(size = 0.1) +
+    geom_smooth(aes(group = Group, colour = Group), se = FALSE) +
+    labs(title = "Module scores post-transplant", y = "Score", colour = "Patient group") +
+    theme +
+  theme(strip.text = element_text(size = 6)) +
+  scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27)) +
+  facet_wrap(~Module, scales = "free") 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-clad2-mol.jpeg"), p, width = 18, height = 10, units = 'cm', dpi = 600)
+```
+
+
+```{r}
+# Add new CLAD patients
+clad_update <- read.csv("clad_update.csv") %>% filter(Group == "CLAD") %>% dplyr::select(Record.ID, diagnosed_within_years, diagnosed_within) %>% mutate(Record.ID = as.character(Record.ID))
+bal_score_df <- bal_score_df %>%
+  left_join(clad_update) %>%
+  mutate(Group_combined = ifelse(Record.ID %in% clad_update$Record.ID, "CLAD", as.character(Group)),
+         Group_combined = factor(Group_combined, levels = c("CLAD-free", "CLAD")))
+
+p <- 
+  ggplot(bal_score_df %>% filter(Months <= 20, Dataset == "RNAseq"), aes(x = Months, y = TotalScore)) +
+    geom_point(size = 0.1) +
+    geom_smooth(aes(group = diagnosed_within, colour = diagnosed_within), se = FALSE) +
+    labs(title = "Module scores post-transplant", y = "Score", colour = "Patient group") +
+    theme +
+  theme(strip.text = element_text(size = 6)) +
+  scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27)) +
+  scale_colour_manual(values = c("1.5 years" = "#ff6b35", "3 years" = "#ff9b54", "5 years" = "#1e96fc", "5+ years" = "#072ac8", "NA" = "darkgrey")) +
+  facet_wrap(~Module, scales = "free") 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-clad-update-rna.jpeg"), p, width = 18, height = 12, units = 'cm', dpi = 600)
+
+
+p <- 
+  ggplot(bal_score_df %>% filter(Months <= 20, Dataset == "Molecules"), aes(x = Months, y = TotalScore)) +
+    geom_point(size = 0.1) +
+    geom_smooth(aes(group = diagnosed_within, colour = diagnosed_within), se = FALSE) +
+    labs(title = "Module scores post-transplant", y = "Score", colour = "Patient group") +
+    theme +
+  theme(strip.text = element_text(size = 6)) +
+  scale_x_continuous(breaks = c(0, 3, 6, 12, 18, 24, 27)) +
+  scale_colour_manual(values = c("1.5 years" = "#ff6b35", "3 years" = "#ff9b54", "5 years" = "#1e96fc", "5+ years" = "#072ac8", "NA" = "darkgrey")) +
+  facet_wrap(~Module, scales = "free") 
+
+ggsave(paste0(path, "Biomarker\ 2/immunosuppression-analysis/figures/all/bal-singscore-clad-update-mol.jpeg"), p, width = 18, height = 12, units = 'cm', dpi = 600)
+
+
+#main visible effect in TCD8 cells
+# within 3 years contains all current CLAD patients minus patient 34 and 109 (total 13+2), which are also not part of the biomarker study or the stable study
+```
+
+
+
+
+
+
+
+
+
